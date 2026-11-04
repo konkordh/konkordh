@@ -1,0 +1,54 @@
+name: Site no ar
+# Runs outside our servers: checks them every 5 minutes (GitHub may run it a
+# little late). When something is down it opens an issue, which e-mails the
+# owner; it closes the issue when everything is back.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test_url:
+        description: "Extra address to check (to test the warning)"
+        required: false
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TEST_URL: ${{ inputs.test_url }}
+        run: |
+          check() {
+            for attempt in 1 2 3; do
+              code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 15 "$1") || code=000
+              if [ "$code" = 200 ] && { [ -z "${2:-}" ] || grep -q "$2" /tmp/body; }; then return 0; fi
+              sleep 20
+            done
+            echo "- $1 respondeu $code" >> /tmp/down
+            return 1
+          }
+          : > /tmp/down
+          check https://konkordh.com/ || true
+          check https://app.konkordh.com/ || true
+          check https://app.konkordh.com/voice-api/status '"online":true' || true
+          check https://voice.konkordh.com/ || true
+          if [ -n "$TEST_URL" ]; then check "$TEST_URL" || true; fi
+
+          open=$(gh issue list -R "$REPO" --state open --label fora-do-ar --json number -q '.[0].number')
+          if [ -s /tmp/down ]; then
+            cat /tmp/down
+            if [ -z "$open" ]; then
+              gh label create fora-do-ar -R "$REPO" --color B60205 --force
+              gh issue create -R "$REPO" --label fora-do-ar --title "Konkordh fora do ar" \
+                --body "$(printf '@hudsonafie-sudo o teste de fora não conseguiu acessar:\n\n%s\n\nAbra uma conversa no projeto Konkord e cole este aviso.' "$(cat /tmp/down)")"
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" -R "$REPO" --comment "Voltou: tudo respondendo de novo."
+          fi
